@@ -68,6 +68,17 @@ class V12Tests(unittest.TestCase):
                         "hook", "selling_points", "usage_scene", "call_to_action"
                     )))
 
+        only_new_hook = sample_result()
+        for style in ("experience", "promotion"):
+            for field in ("selling_points", "usage_scene", "call_to_action"):
+                only_new_hook[style][field] = only_new_hook["pain"][field]
+        with self.assertRaisesRegex(InvalidAIResponse, "只改了开头"):
+            fit_scripts_to_duration(only_new_hook, 30, (3, 9, 12, 6))
+        cliche = sample_result()
+        cliche["pain"]["hook"] = "还在为咖啡杯漏水烦恼吗？"
+        with self.assertRaisesRegex(InvalidAIResponse, "模板化"):
+            fit_scripts_to_duration(cliche, 30, (3, 9, 12, 6))
+
     def test_local_api_only_requests_one_replacement_and_rejects_fabricated_price(self):
         client = FakeClient({"replacement": "咖啡杯放包里，先看防漏。"})
         result = optimize_script_section(
