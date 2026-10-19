@@ -1,0 +1,3 @@
+# 公共配置：这里只放模型名称，不要放 API Key。
+# 新项目优先使用目前可用且支持结构化输出的 Flash-Lite 模型。
+gemini_model = "gemini-3.5-flash-lite"

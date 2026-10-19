@@ -1,0 +1,7 @@
+# 项目运行环境：Python 3.13
+# 中文表单与本地网页界面
+streamlit==1.65.0
+# 导出 Excel（.xlsx）文件
+openpyxl==3.1.5
+# Google 官方 Gemini Python SDK；只安装在项目虚拟环境中
+google-genai==2.31.0
