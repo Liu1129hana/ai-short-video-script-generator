@@ -21,6 +21,7 @@ from deepseek_service import (
 )
 from request_limiter import DAILY_LIMIT, SESSION_DAILY_LIMIT, reserve_ai_request
 from script_editing import get_section, replace_section
+from storyboard_ui import render_storyboards
 
 
 PAGE_TITLE = "AI短视频营销脚本生成器"
@@ -485,3 +486,5 @@ with result_column:
             on_click="rerun",
             width="stretch",
         )
+
+render_storyboards(ExportState)
