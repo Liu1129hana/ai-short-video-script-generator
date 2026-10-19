@@ -3,5 +3,5 @@
 streamlit==1.65.0
 # 导出 Excel（.xlsx）文件
 openpyxl==3.1.5
-# Google 官方 Gemini Python SDK；只安装在项目虚拟环境中
-google-genai==2.31.0
+# 调用 DeepSeek 官方兼容的 HTTPS API；只安装在项目虚拟环境中
+httpx==0.28.1

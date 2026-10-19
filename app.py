@@ -2,13 +2,14 @@
 
 import re
 import time
+import uuid
 from datetime import date
 from threading import Condition
 
 import streamlit as st
 
 from excel_export import export_filename, get_voiceover, make_excel_bytes, missing_sections
-from gemini_service import (
+from deepseek_service import (
     InvalidAIResponse,
     describe_ai_error,
     generate_ai_scripts,
@@ -16,6 +17,7 @@ from gemini_service import (
     get_model_name,
     voiceover_timing_note,
 )
+from request_limiter import DAILY_LIMIT, SESSION_DAILY_LIMIT, reserve_ai_request
 
 
 PAGE_TITLE = "AI短视频营销脚本生成器"
@@ -147,16 +149,17 @@ with input_column:
             ("示例模式", "AI生成模式"),
             horizontal=True,
             key="generation_mode",
-            help="示例模式免费在本地运行；AI生成模式需要 Gemini API Key，并可能产生 API 用量。",
+            help="示例模式免费在本地运行；AI生成模式需要 DeepSeek API Key，并可能产生 API 用量和费用。",
         )
         if generation_mode == "示例模式":
             st.info("示例模式使用本地固定模板，不调用 AI API。")
         else:
             api_key = get_api_key(st.secrets)
             if api_key:
-                st.info("已检测到 Gemini API Key。点击生成按钮后会向 Gemini 发送填写的产品信息。")
+                st.info("已检测到 DeepSeek API Key。点击生成按钮后会向 DeepSeek 发送填写的产品信息。")
             else:
-                st.warning("尚未读取到 Gemini API Key。若刚创建 secrets.toml，请重启网页程序；示例模式仍可使用。")
+                st.warning("尚未读取到 DeepSeek API Key。请在 Streamlit Secrets 或环境变量中配置 DEEPSEEK_API_KEY；示例模式仍可使用。")
+            st.caption(f"为控制公开网页用量：全站每天最多 {DAILY_LIMIT} 次、每个页面会话每天最多 {SESSION_DAILY_LIMIT} 次 AI 请求。失败尝试也计入；服务重启后计数可能重置。")
             if st.session_state.get("last_ai_error"):
                 st.error(f"上次 AI 生成未成功：{st.session_state['last_ai_error']}")
         product_name = st.text_input("产品名称", placeholder="例如：便携咖啡杯", key="product_name")
@@ -193,7 +196,7 @@ with input_column:
                     product_name.strip(), selling_points.strip(), target_audience.strip(), video_duration
                 )
             elif not api_key:
-                message = "尚未配置 Gemini API Key。请先配置，或切回示例模式。已有脚本不会清空。"
+                message = "尚未配置 DeepSeek API Key。请先配置，或切回示例模式。已有脚本不会清空。"
                 st.session_state["last_ai_error"] = message
                 st.error(message)
             else:
@@ -217,7 +220,10 @@ with input_column:
                     else:
                         st.session_state["last_ai_request"] = (request_signature, now)
                         try:
-                            with st.spinner("Gemini 正在生成三条脚本，请稍候……"):
+                            if "ai_session_id" not in st.session_state:
+                                st.session_state["ai_session_id"] = uuid.uuid4().hex
+                            reserve_ai_request(st.session_state["ai_session_id"])
+                            with st.spinner("DeepSeek 正在生成三条脚本，请稍候……"):
                                 result = generate_ai_scripts(
                                     product_name.strip(),
                                     selling_points.strip(),
