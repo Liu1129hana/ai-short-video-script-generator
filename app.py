@@ -8,6 +8,7 @@ from threading import Condition
 
 import streamlit as st
 
+from access_control import check_password, get_app_password, is_ai_authenticated, password_tag
 from excel_export import export_filename, get_voiceover, make_excel_bytes, missing_sections
 from deepseek_service import (
     InvalidAIResponse,
@@ -22,6 +23,8 @@ from request_limiter import DAILY_LIMIT, SESSION_DAILY_LIMIT, reserve_ai_request
 
 PAGE_TITLE = "AI短视频营销脚本生成器"
 AI_REQUEST_COOLDOWN_SECONDS = 8
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_LOCKOUT_SECONDS = 15 * 60
 VIDEO_DURATIONS = (15, 20, 30, 60)
 STYLES = (
     ("pain", "痛点营销型"),
@@ -116,6 +119,34 @@ def format_ai_scripts(result: dict[str, dict[str, str]], duration: int) -> dict[
     return scripts
 
 
+def unlock_ai() -> None:
+    """按钮回调在组件重绘前运行，验证后立即清空输入的密码。"""
+    submitted = st.session_state.get("app_password_input", "")
+    st.session_state["app_password_input"] = ""
+    configured_password = get_app_password(st.secrets)
+    now = time.monotonic()
+    if now < st.session_state.get("login_locked_until", 0):
+        st.session_state["login_message"] = "密码尝试过于频繁，请稍后再试。"
+    elif check_password(submitted, configured_password):
+        st.session_state["ai_auth_tag"] = password_tag(configured_password)
+        st.session_state["login_failures"] = 0
+        st.session_state.pop("login_message", None)
+    else:
+        st.session_state.pop("ai_auth_tag", None)
+        failures = st.session_state.get("login_failures", 0) + 1
+        st.session_state["login_failures"] = failures
+        if failures >= MAX_LOGIN_ATTEMPTS:
+            st.session_state["login_locked_until"] = now + LOGIN_LOCKOUT_SECONDS
+            st.session_state["login_message"] = "密码尝试过于频繁，请 15 分钟后再试。"
+        else:
+            st.session_state["login_message"] = "访问密码不正确。"
+
+
+def lock_ai() -> None:
+    st.session_state.pop("ai_auth_tag", None)
+    st.session_state.pop("login_message", None)
+
+
 st.set_page_config(page_title=PAGE_TITLE, page_icon="🎬", layout="wide")
 st.markdown(
     """
@@ -154,11 +185,25 @@ with input_column:
         if generation_mode == "示例模式":
             st.info("示例模式使用本地固定模板，不调用 AI API。")
         else:
-            api_key = get_api_key(st.secrets)
-            if api_key:
-                st.info("已检测到 DeepSeek API Key。点击生成按钮后会向 DeepSeek 发送填写的产品信息。")
+            configured_password = get_app_password(st.secrets)
+            ai_authenticated = is_ai_authenticated(
+                st.session_state.get("ai_auth_tag"), configured_password
+            )
+            if not configured_password:
+                st.warning("管理员尚未在 Streamlit Secrets 中配置 APP_PASSWORD，AI 模式暂不可用。")
+            elif not ai_authenticated:
+                st.info("AI 生成需要访问密码；示例模式可以直接使用。")
+                st.text_input("访问密码", type="password", key="app_password_input")
+                st.button("解锁 AI 生成", key="unlock_ai", on_click=unlock_ai)
+                if st.session_state.get("login_message"):
+                    st.error(st.session_state["login_message"])
             else:
-                st.warning("尚未读取到 DeepSeek API Key。请在 Streamlit Secrets 或环境变量中配置 DEEPSEEK_API_KEY；示例模式仍可使用。")
+                st.success("AI 生成已解锁（仅限当前页面会话）。")
+                st.button("退出 AI 登录", key="lock_ai", on_click=lock_ai)
+                if get_api_key(st.secrets):
+                    st.info("已检测到 DeepSeek API Key。点击生成按钮后会向 DeepSeek 发送填写的产品信息。")
+                else:
+                    st.warning("尚未读取到 DeepSeek API Key。请在 Streamlit Secrets 或环境变量中配置 DEEPSEEK_API_KEY；示例模式仍可使用。")
             st.caption(f"为控制公开网页用量：全站每天最多 {DAILY_LIMIT} 次、每个页面会话每天最多 {SESSION_DAILY_LIMIT} 次 AI 请求。失败尝试也计入；服务重启后计数可能重置。")
             if st.session_state.get("last_ai_error"):
                 st.error(f"上次 AI 生成未成功：{st.session_state['last_ai_error']}")
@@ -175,7 +220,15 @@ with input_column:
         video_duration = st.selectbox(
             "视频时长", VIDEO_DURATIONS, format_func=lambda seconds: f"{seconds}秒", index=2, key="video_duration"
         )
-        generate_clicked = st.button("生成营销脚本", type="primary", use_container_width=True)
+        generate_clicked = st.button(
+            "生成营销脚本",
+            key="generate_scripts",
+            type="primary",
+            use_container_width=True,
+            disabled=generation_mode == "AI生成模式" and not is_ai_authenticated(
+                st.session_state.get("ai_auth_tag"), get_app_password(st.secrets)
+            ),
+        )
         st.caption("再次点击会按当前输入重新生成三条脚本，并覆盖之前的编辑；调用失败则保留原文。AI 模式对相同输入设置短暂间隔，避免连续点击重复调用。")
 
     if generate_clicked:
@@ -195,7 +248,13 @@ with input_column:
                 scripts = make_example_scripts(
                     product_name.strip(), selling_points.strip(), target_audience.strip(), video_duration
                 )
-            elif not api_key:
+            elif not is_ai_authenticated(
+                st.session_state.get("ai_auth_tag"), get_app_password(st.secrets)
+            ):
+                message = "请先输入正确的访问密码，才能使用 AI 生成；已有脚本不会清空。"
+                st.session_state["last_ai_error"] = message
+                st.error(message)
+            elif not (api_key := get_api_key(st.secrets)):
                 message = "尚未配置 DeepSeek API Key。请先配置，或切回示例模式。已有脚本不会清空。"
                 st.session_state["last_ai_error"] = message
                 st.error(message)
