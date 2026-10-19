@@ -14,6 +14,7 @@ STYLE_NAMES = {
 }
 SCRIPT_FIELDS = ("hook", "selling_points", "usage_scene", "call_to_action", "voiceover")
 SPOKEN_FIELDS = SCRIPT_FIELDS[:-1]
+HOOK_CLICHE_PATTERN = re.compile(r"有没有一款|还在为|^大家好|^今天给大家介绍|^这是一款")
 FIELD_NAMES = {
     "hook": "前三秒钩子",
     "selling_points": "产品核心卖点",
@@ -172,14 +173,16 @@ def fit_scripts_to_duration(
         raise ValueError("视频分镜时间配置不正确。")
     fitted = {}
     for style, script in scripts.items():
+        if HOOK_CLICHE_PATTERN.search(script["hook"]):
+            raise InvalidAIResponse(f"AI 的“{STYLE_NAMES[style]}”开头过于模板化，请重试；已有脚本已保留。")
         parts = {
             field: shorten_spoken_text(script[field], seconds * 4)
             for field, seconds in zip(SPOKEN_FIELDS, segment_lengths)
         }
         parts["voiceover"] = "".join(parts[field] for field in SPOKEN_FIELDS)
         fitted[style] = parts
-    if len({tuple(script[field] for field in SPOKEN_FIELDS) for script in fitted.values()}) != len(STYLE_NAMES):
-        raise InvalidAIResponse("AI 返回的三条脚本内容过于相似，请重试；已有脚本已保留。")
+    if len({tuple(script[field] for field in SPOKEN_FIELDS[1:]) for script in fitted.values()}) != len(STYLE_NAMES):
+        raise InvalidAIResponse("AI 返回的三条脚本只改了开头，后续内容过于相似；已有脚本已保留。")
     return fitted
 
 
@@ -366,6 +369,8 @@ def optimize_script_section(
     if not isinstance(result, dict) or set(result) != {"replacement"} or not isinstance(result["replacement"], str) or not result["replacement"].strip():
         raise InvalidAIResponse("局部优化缺少 replacement 文案；已有编辑已保留。")
     replacement = result["replacement"].strip()
+    if field == "hook" and HOOK_CLICHE_PATTERN.search(replacement):
+        raise InvalidAIResponse("优化后的开头过于模板化，请重试；已有编辑已保留。")
     check_unprovided_claims(
         {style: {field: replacement}},
         "\n".join((product, selling_points, audience, current_section)),
