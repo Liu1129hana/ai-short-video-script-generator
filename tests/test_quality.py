@@ -30,15 +30,32 @@ from request_limiter import DAILY_LIMIT, SESSION_DAILY_LIMIT, RateLimitError, re
 
 
 def sample_result():
+    sections = {
+        "pain": (
+            "上班路上带咖啡，担心杯子会漏吗？",
+            "这款杯子防漏、轻便，也容易清洗。",
+            "放进通勤包，到办公室再取出来喝。",
+            "到商品页核对详情和实际价格。",
+        ),
+        "experience": (
+            "出门装咖啡，先看怎么放进包。",
+            "杯子轻便，清洗也方便。",
+            "镜头拍下装咖啡、放入通勤包的步骤。",
+            "想看杯子细节，可以点进商品页。",
+        ),
+        "promotion": (
+            "想选通勤咖啡杯？先看关键点。",
+            "防漏、轻便、容易清洗，适合日常带着走。",
+            "早上装好咖啡，带到办公室。",
+            "先查看商品规格与当前实际价格，再决定要不要买。",
+        ),
+    }
     return {
-        style: {
-            "hook": "上班路上带咖啡，担心杯子会漏吗？",
-            "selling_points": "这款杯子防漏、轻便，也容易清洗。",
-            "usage_scene": "放进通勤包，到办公室再取出来喝。",
-            "call_to_action": "到商品页核对详情和实际价格。",
-            "voiceover": f"{style}：上班路上带咖啡，担心杯子会漏吗？这款杯子防漏、轻便，也容易清洗。放进通勤包，到办公室再取出来喝。到商品页核对详情和实际价格。",
-        }
-        for style in ("pain", "experience", "promotion")
+        style: dict(zip(
+            ("hook", "selling_points", "usage_scene", "call_to_action", "voiceover"),
+            (*parts, "".join(parts)),
+        ))
+        for style, parts in sections.items()
     }
 
 
