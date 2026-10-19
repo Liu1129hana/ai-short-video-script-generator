@@ -14,6 +14,7 @@ import httpx
 from streamlit.testing.v1 import AppTest
 from openpyxl import load_workbook
 
+from access_control import check_password, get_app_password, is_ai_authenticated, password_tag
 from excel_export import make_excel_bytes
 from deepseek_service import (
     InvalidAIResponse,
@@ -42,6 +43,69 @@ def sample_result():
 
 
 class QualityTests(unittest.TestCase):
+    def test_password_only_from_secrets_and_compared_without_echo(self):
+        with patch.dict(os.environ, {"APP_PASSWORD": "环境变量不能解锁"}):
+            self.assertEqual(get_app_password({}), "")
+        self.assertEqual(get_app_password({"APP_PASSWORD": ""}), "")
+        self.assertEqual(get_app_password({"APP_PASSWORD": "测试用访问密码"}), "测试用访问密码")
+        self.assertFalse(check_password("错误密码", "测试用访问密码"))
+        self.assertTrue(check_password("测试用访问密码", "测试用访问密码"))
+        self.assertFalse(is_ai_authenticated(None, "测试用访问密码"))
+        self.assertTrue(is_ai_authenticated(password_tag("测试用访问密码"), "测试用访问密码"))
+        self.assertFalse(is_ai_authenticated(password_tag("测试用访问密码"), "新密码"))
+
+    def test_unauthenticated_visitor_cannot_call_paid_api(self):
+        with patch("access_control.get_app_password", return_value="测试用访问密码"), patch(
+            "deepseek_service.get_api_key", return_value="假密钥"
+        ), patch("deepseek_service.generate_ai_scripts") as generate, patch(
+            "request_limiter.reserve_ai_request"
+        ) as reserve:
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py"), default_timeout=15).run()
+            app.radio(key="generation_mode").set_value("AI生成模式").run()
+            self.assertTrue(app.button(key="generate_scripts").disabled)
+            self.assertFalse(app.exception)
+            app.text_input(key="app_password_input").set_value("错误密码").run()
+            app.button(key="unlock_ai").click().run()
+            self.assertTrue(app.button(key="generate_scripts").disabled)
+            self.assertTrue(any("访问密码不正确" in item.value for item in app.error))
+            self.assertEqual(app.text_input(key="app_password_input").value, "")
+            self.assertEqual(generate.call_count, 0)
+            self.assertEqual(reserve.call_count, 0)
+
+            app.text_input(key="app_password_input").set_value("测试用访问密码").run()
+            app.button(key="unlock_ai").click().run()
+            self.assertFalse(app.button(key="generate_scripts").disabled)
+            self.assertFalse(app.exception)
+            app.button(key="lock_ai").click().run()
+            self.assertTrue(app.button(key="generate_scripts").disabled)
+            self.assertEqual(generate.call_count, 0)
+            self.assertEqual(reserve.call_count, 0)
+
+    def test_missing_access_password_fails_closed(self):
+        with patch("access_control.get_app_password", return_value=""), patch(
+            "deepseek_service.get_api_key", return_value="假密钥"
+        ), patch("deepseek_service.generate_ai_scripts") as generate:
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py"), default_timeout=15).run()
+            app.radio(key="generation_mode").set_value("AI生成模式").run()
+            self.assertTrue(app.button(key="generate_scripts").disabled)
+            self.assertTrue(any("APP_PASSWORD" in item.value for item in app.warning))
+            self.assertEqual(generate.call_count, 0)
+
+    def test_five_wrong_passwords_lock_current_session(self):
+        with patch("access_control.get_app_password", return_value="测试用访问密码"), patch(
+            "deepseek_service.generate_ai_scripts"
+        ) as generate:
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py"), default_timeout=15).run()
+            app.radio(key="generation_mode").set_value("AI生成模式").run()
+            for _ in range(5):
+                app.text_input(key="app_password_input").set_value("错误密码").run()
+                app.button(key="unlock_ai").click().run()
+            self.assertTrue(any("15 分钟后" in item.value for item in app.error))
+            app.text_input(key="app_password_input").set_value("测试用访问密码").run()
+            app.button(key="unlock_ai").click().run()
+            self.assertTrue(app.button(key="generate_scripts").disabled)
+            self.assertEqual(generate.call_count, 0)
+
     def test_offline_generation_and_schema_rejection(self):
         class FakeResponse:
             def raise_for_status(self):
@@ -116,7 +180,9 @@ class QualityTests(unittest.TestCase):
         self.assertIn("网络", describe_ai_error(httpx.ConnectError("连接失败")))
 
     def test_page_retains_edits_and_blocks_repeat_click(self):
-        with patch("deepseek_service.get_api_key", return_value="测试密钥"), patch(
+        with patch("access_control.get_app_password", return_value="测试用访问密码"), patch(
+            "deepseek_service.get_api_key", return_value="测试密钥"
+        ), patch(
             "deepseek_service.generate_ai_scripts", return_value=sample_result()
         ) as generate, patch("request_limiter.reserve_ai_request") as reserve:
             app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py"), default_timeout=15).run()
@@ -124,16 +190,19 @@ class QualityTests(unittest.TestCase):
             app.text_area(key="selling_points").set_value("防漏、轻便、容易清洗").run()
             app.text_input(key="target_audience").set_value("通勤上班族").run()
             app.radio(key="generation_mode").set_value("AI生成模式").run()
-            app.button[0].click().run()
+            app.text_input(key="app_password_input").set_value("测试用访问密码").run()
+            app.button(key="unlock_ai").click().run()
+            app.button(key="generate_scripts").click().run()
             self.assertEqual(generate.call_count, 1)
             self.assertEqual(reserve.call_count, 1)
             self.assertIn("【完整口播文案】", app.text_area(key="script_pain").value)
-            app.button[0].click().run()
+            app.button(key="generate_scripts").click().run()
             self.assertEqual(generate.call_count, 1)
             self.assertTrue(any("避免重复调用" in item.value for item in app.warning))
 
         original = app.text_area(key="script_pain").value
-        app.text_area(key="script_pain").set_value(original.replace("上班路上带咖啡", "用户改过的开头", 1)).run()
+        with patch("access_control.get_app_password", return_value="测试用访问密码"):
+            app.text_area(key="script_pain").set_value(original.replace("上班路上带咖啡", "用户改过的开头", 1)).run()
         edited_scripts = {
             style: app.text_area(key=f"script_{style}").value
             for style in ("pain", "experience", "promotion")
@@ -150,10 +219,12 @@ class QualityTests(unittest.TestCase):
         class Denied(Exception):
             code = 403
 
-        with patch("deepseek_service.get_api_key", return_value="测试密钥"), patch(
+        with patch("access_control.get_app_password", return_value="测试用访问密码"), patch(
+            "deepseek_service.get_api_key", return_value="测试密钥"
+        ), patch(
             "deepseek_service.generate_ai_scripts", side_effect=Denied("密钥内容不应显示")
         ), patch("request_limiter.reserve_ai_request"):
-            app.button[0].click().run()
+            app.button(key="generate_scripts").click().run()
         self.assertFalse(app.exception)
         self.assertIn("用户改过的开头", app.text_area(key="script_pain").value)
         self.assertTrue(any("没有访问权限" in item.value for item in app.error))
