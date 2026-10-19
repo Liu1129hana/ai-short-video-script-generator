@@ -1,4 +1,4 @@
-"""AI 短视频营销脚本生成器的本地示例页面。"""
+"""AI 短视频营销脚本生成器：示例、AI 生成、局部优化与 Excel 导出。"""
 
 import re
 import time
@@ -16,9 +16,11 @@ from deepseek_service import (
     generate_ai_scripts,
     get_api_key,
     get_model_name,
+    optimize_script_section,
     voiceover_timing_note,
 )
 from request_limiter import DAILY_LIMIT, SESSION_DAILY_LIMIT, reserve_ai_request
+from script_editing import get_section, replace_section
 
 
 PAGE_TITLE = "AI短视频营销脚本生成器"
@@ -145,6 +147,52 @@ def unlock_ai() -> None:
 def lock_ai() -> None:
     st.session_state.pop("ai_auth_tag", None)
     st.session_state.pop("login_message", None)
+
+
+def clear_optimization_status(style_key: str) -> None:
+    st.session_state.pop(f"optimize_status_{style_key}", None)
+
+
+def optimize_current_script(style_key: str, field: str) -> None:
+    """按钮回调在编辑框重绘前运行，因此能读到并保留刚修改的文字。"""
+    status_key = f"optimize_status_{style_key}"
+    script_key = f"script_{style_key}"
+    original = st.session_state.get(script_key, "")
+    try:
+        if st.session_state.get("last_generated_mode") != "AI生成模式" or st.session_state.get("generation_mode") != "AI生成模式":
+            raise ValueError("只有当前显示的 AI 脚本可以局部优化；已有编辑已保留。")
+        if not is_ai_authenticated(st.session_state.get("ai_auth_tag"), get_app_password(st.secrets)):
+            raise ValueError("请先输入正确的访问密码，才能局部优化；已有编辑已保留。")
+        if missing_sections(original):
+            raise ValueError("请先补全脚本段落与标签，再进行局部优化；已有编辑已保留。")
+        current_section = get_section(original, field)
+        api_key = get_api_key(st.secrets)
+        if not api_key:
+            raise ValueError("尚未配置 DeepSeek API Key；已有编辑已保留。")
+        now = time.monotonic()
+        if now - st.session_state.get("last_optimization_time", -AI_REQUEST_COOLDOWN_SECONDS) < AI_REQUEST_COOLDOWN_SECONDS:
+            raise ValueError("刚进行过 AI 优化，请稍等几秒再试；已有编辑已保留。")
+        product, points, audience, duration = st.session_state["last_generated_inputs"]
+        segment_index = {"hook": 0, "selling_points": 1, "call_to_action": 3}[field]
+        start, end = TIME_SEGMENTS[duration][segment_index]
+        model = get_model_name()
+        if "ai_session_id" not in st.session_state:
+            st.session_state["ai_session_id"] = uuid.uuid4().hex
+        reserve_ai_request(st.session_state["ai_session_id"])
+        st.session_state["last_optimization_time"] = now
+        replacement = optimize_script_section(
+            product, points, audience, duration, style_key, field,
+            original, current_section, api_key, model,
+            segment_seconds=end - start,
+        )
+        updated, voiceover_synced = replace_section(original, field, replacement)
+        st.session_state[script_key] = updated
+        note = "完整口播已同步更新。" if voiceover_synced else "完整口播保留了手动编辑内容，请核对是否需要同步修改。"
+        st.session_state[status_key] = ("success", f"已优化指定段落，其余原文已保留。{note}")
+    except (InvalidAIResponse, ValueError) as error:
+        st.session_state[status_key] = ("error", str(error))
+    except Exception as error:
+        st.session_state[status_key] = ("error", describe_ai_error(error))
 
 
 st.set_page_config(page_title=PAGE_TITLE, page_icon="🎬", layout="wide")
@@ -290,6 +338,7 @@ with input_column:
                                     video_duration,
                                     api_key,
                                     model_name,
+                                    segment_lengths=tuple(end - start for start, end in TIME_SEGMENTS[video_duration]),
                                 )
                         finally:
                             st.session_state["last_ai_request"] = (request_signature, time.monotonic())
@@ -306,6 +355,7 @@ with input_column:
                 st.session_state.pop("last_ai_error", None)
                 for style_key, script in scripts.items():
                     st.session_state[f"script_{style_key}"] = script
+                    clear_optimization_status(style_key)
                 st.session_state["last_generated_inputs"] = (
                     product_name,
                     selling_points,
@@ -348,6 +398,8 @@ with result_column:
                     key=f"script_{style_key}",
                     height=200,
                     help="直接修改文字即可。修改会在当前页面会话中保留。",
+                    on_change=clear_optimization_status,
+                    args=(style_key,),
                 )
                 if last_mode == "AI生成模式" and not missing_sections(edited_scripts[style_key]):
                     timing_note = voiceover_timing_note(
@@ -356,6 +408,28 @@ with result_column:
                     )
                     if timing_note:
                         st.caption(f"⏱️ {timing_note}")
+                if last_mode == "AI生成模式":
+                    can_optimize = generation_mode == "AI生成模式" and is_ai_authenticated(
+                        st.session_state.get("ai_auth_tag"), get_app_password(st.secrets)
+                    )
+                    button_columns = st.columns(3)
+                    for column, (field, label) in zip(button_columns, (
+                        ("hook", "优化前三秒"),
+                        ("selling_points", "强化核心卖点"),
+                        ("call_to_action", "优化购买引导"),
+                    )):
+                        with column:
+                            st.button(
+                                label,
+                                key=f"optimize_{style_key}_{field}",
+                                on_click=optimize_current_script,
+                                args=(style_key, field),
+                                disabled=not can_optimize,
+                                use_container_width=True,
+                            )
+                    status = st.session_state.get(f"optimize_status_{style_key}")
+                    if status:
+                        (st.success if status[0] == "success" else st.error)(status[1])
 
         st.caption("下载时会按【时间｜段落名称】拆分四段；如有【完整口播文案】，也会按编辑后的原文导出。修改分段后，请同步核对口播文案，并保留标签。")
         invalid_styles = [
