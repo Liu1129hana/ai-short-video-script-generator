@@ -21,6 +21,17 @@ AI_FIELDS = {
     "character": "人物一致性约束",
     "product": "产品一致性约束",
 }
+FIELD_ALIASES = {
+    "duration": ("镜头时长（秒）", "镜头时长", "时长"),
+    "shot_size": ("景别",),
+    "camera": ("运镜", "镜头运动"),
+    "action": ("画面动作", "画面内容"),
+    "dialogue": ("台词", "口播", "口播内容"),
+    "materials": ("素材需求", "拍摄素材"),
+    "prompt": ("AI视频提示词", "视频提示词"),
+    "character": ("人物一致性约束", "人物一致性"),
+    "product": ("产品一致性约束", "产品一致性"),
+}
 CHARACTER_RULE = "各镜头使用同一人物参考、服装与握持方式；未提供人物参考时优先使用不露脸手部镜头。"
 PRODUCT_RULE = "外观、颜色、标识、比例与结构以产品实物参考为准；不得补造内部结构或改变部件，不清楚的细节待核对。"
 # 相机和构图无需数字参数。数字只允许出自产品资料/人物设定，时长独立校验。
@@ -79,6 +90,33 @@ def validate_shots(shots, mode: str, duration: int) -> list[dict]:
     return clean
 
 
+def normalize_generated_shots(shots, mode: str):
+    """只整理模型输出的常见字段变体；编辑和导出仍使用严格的标准字段。"""
+    if not isinstance(shots, list):
+        return shots
+    fields = fields_for(mode)
+    normalized_shots = []
+    for index, shot in enumerate(shots, 1):
+        if not isinstance(shot, dict):
+            raise InvalidAIResponse(f"第 {index} 个镜头不是对象；已有内容已保留。")
+        clean = {}
+        for field, label in fields.items():
+            aliases = (field, *FIELD_ALIASES[field])
+            present = [shot[name] for name in aliases if name in shot]
+            if not present:
+                raise InvalidAIResponse(f"第 {index} 个镜头缺少“{label}”；已有内容已保留。可使用下方示例分镜。")
+            if any(value != present[0] for value in present[1:]):
+                raise InvalidAIResponse(f"第 {index} 个镜头的“{label}”重复且内容冲突；已有内容已保留。")
+            value = present[0]
+            if field == "duration" and isinstance(value, str):
+                match = re.fullmatch(r"\s*(\d+)\s*(?:秒|s)?\s*", value, re.IGNORECASE)
+                if match:
+                    value = int(match.group(1))
+            clean[field] = value
+        normalized_shots.append(clean)
+    return normalized_shots
+
+
 def make_example_storyboard(script: str, duration: int, mode: str, reference: str = "", character: str = "") -> list[dict]:
     """明确标记的本地分镜示例，台词按原文连续拆分，不生成产品事实。"""
     voiceover = get_voiceover(script)
@@ -131,7 +169,8 @@ def generate_storyboard(product, selling_points, audience, duration, script, mod
         "真人实拍给出实际可准备的道具和机位。AI视频制作逐镜给出完整视频提示词以及人物、产品一致性约束；"
         "提示词须包含场景、动作、景别、运镜、光线、参考要求，无字幕无水印，品牌文字留给后期。"
         + CHARACTER_RULE + PRODUCT_RULE +
-        '只返回 JSON：{"shots": [镜头对象, ...]}。每个镜头恰好包含以下字段，除 duration 外均为字符串，除 dialogue 外不能为空：'
+        '只返回 JSON：{"shots": [镜头对象, ...]}。字段名必须按下面的英文键原样填写，不得翻译为中文；'
+        "不要增加镜头编号、时间码或说明字段。除 duration 外均为字符串，除 dialogue 外不能为空："
         + json.dumps(schema, ensure_ascii=False)
     )
     inputs = json.dumps({"产品名称": product, "核心卖点": selling_points, "目标用户": audience,
@@ -145,9 +184,9 @@ def generate_storyboard(product, selling_points, audience, duration, script, mod
         data = json.loads(_read_completion(response))
     except (TypeError, json.JSONDecodeError) as error:
         raise InvalidAIResponse("分镜返回的内容不是有效 JSON；已有内容已保留。") from error
-    if not isinstance(data, dict) or set(data) != {"shots"}:
+    if not isinstance(data, dict) or "shots" not in data:
         raise InvalidAIResponse("分镜返回格式不正确；已有内容已保留。")
-    shots = validate_shots(data["shots"], mode, duration)
+    shots = validate_shots(normalize_generated_shots(data["shots"], mode), mode, duration)
     if re.sub(r"\s+", "", "".join(shot["dialogue"] for shot in shots)) != re.sub(r"\s+", "", voiceover):
         raise InvalidAIResponse("AI 改写或遗漏了选定脚本台词，已拒绝覆盖；请重试。")
     for shot in shots:
