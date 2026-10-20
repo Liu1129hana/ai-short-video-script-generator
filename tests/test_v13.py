@@ -50,6 +50,19 @@ def call_service(client, mode=MODES[0], **kwargs):
 
 
 class StoryboardServiceTests(unittest.TestCase):
+    def test_common_model_field_variants_and_unused_metadata_are_normalized(self):
+        aliases = {"duration": "镜头时长（秒）", "shot_size": "景别", "camera": "运镜",
+                   "action": "画面动作", "dialogue": "台词", "materials": "素材需求"}
+        original = sample_record()["shots"]
+        returned = [{aliases[key]: f"{value}秒" if key == "duration" else value
+                     for key, value in shot.items()} | {"镜头编号": index}
+                    for index, shot in enumerate(original, 1)]
+        content = json.dumps({"shots": returned, "summary": "拍摄说明"}, ensure_ascii=False)
+        self.assertEqual(call_service(FakeClient(original, content=content)), original)
+        del returned[0]["素材需求"]
+        with self.assertRaisesRegex(InvalidAIResponse, "第 1 个镜头缺少“素材需求”"):
+            call_service(FakeClient(original, content=json.dumps({"shots": returned}, ensure_ascii=False)))
+
     def test_both_modes_and_all_durations(self):
         for mode in MODES:
             for duration in (15, 20, 30, 60):
@@ -74,7 +87,8 @@ class StoryboardServiceTests(unittest.TestCase):
             bads.append(bad)
         bad = deepcopy(original)
         bad[0]["extra"] = "ignored?"
-        bads.append(bad)
+        with self.assertRaises(InvalidAIResponse):
+            validate_shots(bad, MODES[0], 20)  # 编辑/导出继续只接收标准字段。
         for shots in bads:
             with self.subTest(shots=shots), self.assertRaises(InvalidAIResponse):
                 call_service(FakeClient(shots))
@@ -164,6 +178,16 @@ class StoryboardUITests(unittest.TestCase):
         snapshot = self.app.session_state["storyboard_export_state"].snapshot
         self.assertEqual(snapshot["record"]["shots"][0]["action"], "我改过的拍摄动作")
         self.assertEqual(len(self.app.session_state["storyboards"]), 3)
+        self.assertEqual(self.api.call_count, 0)
+        self.assertEqual(self.reserve.call_count, 0)
+
+    def test_ai_mode_has_local_fallback_without_key_or_quota_use(self):
+        self.app.radio(key="generation_mode").set_value("AI生成模式").run()
+        self.assertTrue(self.app.button(key="generate_storyboard").disabled)
+        self.app.button(key="example_storyboard_fallback").click().run()
+        self.assertFalse(self.app.exception)
+        record = self.app.session_state["storyboards"]["pain:真人实拍"]
+        self.assertEqual(record["generation_mode"], "本地示例（基于当前脚本）")
         self.assertEqual(self.api.call_count, 0)
         self.assertEqual(self.reserve.call_count, 0)
 

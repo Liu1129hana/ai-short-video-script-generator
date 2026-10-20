@@ -18,7 +18,7 @@ def save_shot(board_key, index, field, widget_key):
     st.session_state["storyboards"][board_key]["shots"][index][field] = st.session_state[widget_key]
 
 
-def generate_current_storyboard():
+def generate_current_storyboard(example_only=False):
     state = st.session_state
     style, mode = state["storyboard_style"], state["storyboard_mode"]
     board_key = f"{style}:{mode}"
@@ -32,7 +32,7 @@ def generate_current_storyboard():
         generation_mode = state["generation_mode"]
         if len(scripts[style]) > 16000 or len(reference) > 4000 or len(character) > 2000:
             raise InvalidAIResponse("脚本或参考资料过长，请精简后重试。")
-        if generation_mode == "示例模式":
+        if example_only or generation_mode == "示例模式":
             shots = make_example_storyboard(scripts[style], duration, mode, reference, character)
         else:
             if not is_ai_authenticated(state.get("ai_auth_tag"), get_app_password(st.secrets)):
@@ -58,7 +58,7 @@ def generate_current_storyboard():
         state.setdefault("storyboards", {})[board_key] = {
             "id": uuid.uuid4().hex, "style": style, "mode": mode, "inputs": inputs,
             "scripts": scripts, "reference": reference, "character": character,
-            "shots": shots, "generation_mode": generation_mode,
+            "shots": shots, "generation_mode": "本地示例（基于当前脚本）" if example_only else generation_mode,
         }
         state["storyboard_status"] = (board_key, "success", "分镜已生成，可逐镜编辑并导出。")
     except (InvalidAIResponse, RateLimitError) as error:
@@ -87,6 +87,9 @@ def render_storyboards(export_state_class):
     can_generate = not use_ai or is_ai_authenticated(st.session_state.get("ai_auth_tag"), get_app_password(st.secrets))
     st.button("AI生成视频分镜" if use_ai else "生成示例分镜", key="generate_storyboard", type="primary",
               disabled=not can_generate, on_click=generate_current_storyboard)
+    if use_ai:
+        st.button("使用示例分镜（不调用 AI）", key="example_storyboard_fallback",
+                  on_click=generate_current_storyboard, args=(True,))
     st.caption("分镜使用原脚本对应的产品信息与时长。重新生成只覆盖当前脚本、当前制作模式的分镜；切换模式会保留草稿。"
                + ("AI 分镜每次计入原有每日用量，失败也计数。" if use_ai else "当前为本地示例，不调用 AI。"))
     status = st.session_state.get("storyboard_status")
